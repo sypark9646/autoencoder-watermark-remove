@@ -189,12 +189,11 @@ if __name__ == '__main__':
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
-        # TODO: Move this into `debug()` method.
-        if epoch == 0 or epoch % 100 == 0:
-            print(">> epoch # {}: {}".format(epoch, loss.data))
             
             if loss < min_loss:
-                print(">> updating weights.")
+                print(">> epoch # {}: save weight {}". format(epoch, loss.data))
                 model.save(optimizer=optimizer, loss=loss)
                 min_loss = loss
+        
+            
+            
