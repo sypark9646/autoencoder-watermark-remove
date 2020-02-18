@@ -1,19 +1,78 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-
-from data import DeWatermarkerDataset
-from utils import display 
 import cv2
 import numpy as np
+from dataset import LoadDataset
+class Autoencoder(nn.Module):
+    '''
+    참고
+    https://github.com/tallosan/DeWatermarker/tree/master/data
+    https://tutorials.pytorch.kr/beginner/blitz/neural_networks_tutorial.html
+    nn 은 모델을 정의하고 미분하는데 autograd 를 사용하는데, nn.Module 은 계층(layer)과 output 을 반환하는 forward(input) 메서드를 포함한다.
+    '''
+    FPATH = "saved_model.pt"
 
+    # documentation images shape = 1 x 2306 x 1728
+    def __init__(self, inpt_shape):
+        super().__init__()
+        
+        self.encoder = nn.Sequential(
+            #input = batch x 1 x 2306 x 1728
+            #output = batch x 16 x 1152 x 863
+            nn.Conv2d(
+                in_channels=1,
+                out_channels=16,
+                kernel_size=3,
+                stride=1
+            ),
+            nn.ReLU(True),
 
-class BaseAutoencoder(nn.Module):
-    """
-    Provides some common functionality across the different autoencoder
-    model architectures.
-    """
+            #input = batch x 1 x 1152 x 863
+            #output = batch x 32 x 575 x 430
+            nn.Conv2d(
+                in_channels=16,
+                out_channels=32,
+                kernel_size=3
+            ),
+            nn.ReLU(inplace=True),
 
+            #input = batch x 32 x 575 x 430
+            #output = batch x 64 x 286 x 214
+            nn.Conv2d(
+                in_channels=32,
+                out_channels=64,
+                kernel_size=3
+            ),
+            nn.ReLU(inplace=True),
+        )
+        self.pool = nn.MaxPool2d(2, return_indices=True)
+        self.unpool = nn.MaxUnpool2d(2, padding=0)
+
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(
+                in_channels=64,
+                out_channels=32,
+                kernel_size=3
+            ),
+            nn.ReLU(inplace=True),
+
+            nn.ConvTranspose2d(
+                in_channels=32,
+                out_channels=16,
+                kernel_size=3
+            ),
+            nn.ReLU(inplace=True),
+
+            nn.ConvTranspose2d(
+                in_channels=16,
+                out_channels=1,
+                kernel_size=3
+            ),
+            nn.ReLU(inplace=True)
+        )
+    
+    
     def forward(self, x):
         """
         Perform the forward pass on the given input.
@@ -22,7 +81,9 @@ class BaseAutoencoder(nn.Module):
         """
         x = self.resize(x)
         encoded_x = self.encoder(x)
-        decoded_x = self.decoder(encoded_x)
+        pool_x, indices = self.pool(encoded_x)
+        unpool_x = self.unpool(pool_x, indices)
+        decoded_x = self.decoder(unpool_x)
 
         return decoded_x
 
@@ -32,7 +93,7 @@ class BaseAutoencoder(nn.Module):
         """
         optimizer = torch.optim.Adam(
             model.parameters(),
-            lr=ETA,
+            lr=1e-3,
             weight_decay=1e-5
         )
         loss = None
@@ -46,11 +107,9 @@ class BaseAutoencoder(nn.Module):
             if isinstance(checkpoint, dict) and 'optimizer_state_dict' in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
-                
             if isinstance(checkpoint, dict) and 'loss' in checkpoint:    
                 loss = checkpoint['loss']
 
-            #self.load_state_dict(torch.load(self.FPATH))
             self.eval()
             return optimizer, loss
             
@@ -76,97 +135,35 @@ class BaseAutoencoder(nn.Module):
         is expected in the following shape:
             (batch_size, n_channels, height, width)
         """
+        
         #print(sample.shape) # torch.Size([1, 2306, 1728, 3]) -> torch.Size([1, 2306, 1728])
+        sample = sample.reshape(1,2306,1728,1)
         return sample.permute(0, 3, 1, 2).type("torch.FloatTensor")
 
-class ARCH1Autoencoder(BaseAutoencoder):
-    """
-    Second autoencoder architecture. This will be a 2-layer convolutional
-    autoencoder model.
-    """
-    KERNEL_SIZE = 3
-    STRIDE = 1
-    FPATH = "arch_1.pt"
 
-    def __init__(self, inpt_shape):
-        super().__init__()
-        inpt_channels = 1
-        
-        self.encoder = nn.Sequential(
-            nn.Conv2d(
-                in_channels=inpt_channels,
-                out_channels=6,
-                kernel_size=self.KERNEL_SIZE,
-                stride=self.STRIDE
-            ),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(
-                in_channels=6,
-                out_channels=12,
-                kernel_size=self.KERNEL_SIZE,
-                stride=self.STRIDE
-            ),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(
-                in_channels=12,
-                out_channels=24,
-                kernel_size=self.KERNEL_SIZE,
-                stride=self.STRIDE
-            ),
-            nn.ReLU(inplace=True)
-        )
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(
-                in_channels=24,
-                out_channels=12,
-                kernel_size=self.KERNEL_SIZE
-            ),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(
-                in_channels=12,
-                out_channels=6,
-                kernel_size=self.KERNEL_SIZE
-            ),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(
-                in_channels=6,
-                out_channels=inpt_channels,
-                kernel_size=self.KERNEL_SIZE
-            ),
-            nn.ReLU(inplace=True)
-        )
 
 if __name__ == '__main__':
     torch.multiprocessing.freeze_support()
-    
-    # Hyperparameters.
-    BATCH_SIZE = 4
-    SHUFFLE = True
-    NUM_WORKERS = 4
-    N_EPOCHS = 2000
-    N_BATCHES = 10
-    ETA = 1e-3
-    
+
     # Data setup.
-    dataset = DeWatermarkerDataset(root_dir='C:/Users/soyeon/Desktop/DeWatermarker-master/tests/set.pkl')
-    INPT_SHAPE = dataset[0]["watermarked"].shape
+    dataset = LoadDataset(root_dir='data_test/')
+    INPT_SHAPE = dataset.len
     dataloader = DataLoader(
         dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=SHUFFLE,
-        num_workers=NUM_WORKERS
+        batch_size=1,
+        shuffle=True,
+        num_workers=3
     )
     
     # Model setup. Note, we have the option to load in an existing model.
-    model = ARCH1Autoencoder(inpt_shape=INPT_SHAPE)
-    model.load()
-    
+    model = Autoencoder(inpt_shape=INPT_SHAPE)
+    saved_optimizer, saved_loss = model.load()
     
     for i_batch, sample_batched in enumerate(dataloader):
-        watermarked = sample_batched["watermarked"]
+        watermarked, original = sample_batched
         output = model(x=watermarked).detach().numpy()
         output_pic = output.reshape(2306, 1728, 1).astype(int) #tiff float형으로 저장이 안돼서, uint8로 하면 노이즈 안없어짐
         
-        cv2.imwrite('C:/Users/soyeon/Desktop/DeWatermarker-master/output.tiff', output_pic)
+        cv2.imwrite('C:/Users/soyeon/Desktop/Autoencoder_watermark_remove/output{}.tiff'.format(int(i_batch)), output_pic)
    
     print('Finished!')
